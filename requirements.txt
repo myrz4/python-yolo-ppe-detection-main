@@ -1,0 +1,22 @@
+# YOLO PPE Detection System Requirements
+# Install all dependencies with: pip install -r requirements.txt
+
+# Core dependencies
+ultralytics
+opencv-python
+
+# GUI Framework (for scripts 3, 4, 5)
+PySide6
+
+# Audio alerts (for scripts 4, 5)
+pygame
+
+# Telegram notifications (for script 5, 6)
+requests
+
+# Database and reporting (for scripts 6, 7)
+reportlab
+matplotlib
+
+# Timezone support
+pytz
