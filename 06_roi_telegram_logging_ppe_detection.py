@@ -11,10 +11,10 @@ from datetime import datetime, date
 from ultralytics import YOLO
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QComboBox, QTextEdit,
-                               QGroupBox, QRadioButton, QCheckBox, QLineEdit)
+                               QGroupBox, QRadioButton, QCheckBox, QLineEdit, QGridLayout)
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen
-from pygame import mixer
+from pygame import error as PygameError, mixer
 import requests
 import pytz
 from concurrent.futures import ThreadPoolExecutor
@@ -38,8 +38,9 @@ VIDEO_SOURCE = 0  # 0 for webcam, or path to video file, or RTSP URL
 # Camera/Zone Configuration
 CAMERA_ZONE_NAME = 'Main Entrance'  # Change this for different monitoring zones
 
-# Alert sound file (MP3)
-ALERT_SOUND_PATH = 'alert.mp3'
+# Status sound files (MP3)
+PASS_SOUND_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pass.mp3')
+FAIL_SOUND_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fail.mp3')
 
 # Alert cooldown (seconds)
 ALERT_COOLDOWN = 3
@@ -70,7 +71,14 @@ TRACKING_MEMORY_FRAMES = 30
 
 # Class names
 PPE_PROPER = ['helmet', 'gloves', 'vest', 'boots', 'goggles']
-PPE_VIOLATIONS = ['no_helmet', 'no_goggle', 'no_gloves', 'no_boots', 'none']
+PPE_VIOLATIONS = {
+    'no_helmet': 'helmet',
+    'no_goggle': 'goggles',
+    'no_gloves': 'gloves',
+    'no_boots': 'boots',
+    'no_vest': 'vest',
+    'none': None
+}
 PERSON_CLASS = 'Person'
 
 # Mode 2: Specific rules
@@ -509,7 +517,9 @@ class PPEDetectionApp(QMainWindow):
         self.use_roi = False
         self.last_alert_time = None
         self.last_telegram_time = None
+        self.last_audio_status = None
         self.violation_mode = VIOLATION_MODE
+        self.required_ppe = list(REQUIRED_PPE)
         self.current_frame = None
 
         # Performance tracking
@@ -536,12 +546,13 @@ class PPEDetectionApp(QMainWindow):
         # Initialize audio mixer
         try:
             mixer.init()
-            self.audio_enabled = os.path.exists(ALERT_SOUND_PATH)
-            if not self.audio_enabled:
-                print(f"Warning: Alert sound file not found at {ALERT_SOUND_PATH}")
-        except Exception as e:
+            self.audio_enabled = True
+        except PygameError as e:
             print(f"Warning: Could not initialize audio mixer - {str(e)}")
             self.audio_enabled = False
+        for sound_path in (PASS_SOUND_PATH, FAIL_SOUND_PATH):
+            if not os.path.isfile(sound_path):
+                print(f"Warning: Status sound file not found at {sound_path}")
 
         # Setup UI
         self.setup_ui()
@@ -599,6 +610,15 @@ class PPEDetectionApp(QMainWindow):
         # Right panel - Settings, statistics and alerts
         right_layout = QVBoxLayout()
 
+        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "technipfmc.webp")
+        logo = QPixmap(logo_path)
+        if not logo.isNull():
+            logo_label = QLabel()
+            logo_label.setPixmap(logo.scaled(280, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo_label.setAlignment(Qt.AlignCenter)
+            logo_label.setContentsMargins(6, 6, 6, 6)
+            right_layout.addWidget(logo_label)
+
         # Zone information
         zone_group = QGroupBox("Monitoring Zone")
         zone_layout = QVBoxLayout()
@@ -654,9 +674,29 @@ class PPEDetectionApp(QMainWindow):
         mode_layout.addWidget(self.mode1_radio)
         mode_layout.addWidget(self.mode2_radio)
 
-        required_label = QLabel(f"Mode 2 Required PPE: {', '.join(REQUIRED_PPE)}")
+        required_label = QLabel("Mode 2 Required PPE:")
         required_label.setStyleSheet("color: gray; font-size: 10px;")
         mode_layout.addWidget(required_label)
+
+        required_ppe_layout = QGridLayout()
+        self.required_ppe_checkboxes = {}
+        for index, ppe in enumerate(PPE_PROPER):
+            checkbox = QCheckBox(ppe.capitalize())
+            checkbox.setChecked(ppe in self.required_ppe)
+            checkbox.toggled.connect(
+                lambda checked, ppe_name=ppe: self.on_required_ppe_changed(
+                    ppe_name, checked
+                )
+            )
+            self.required_ppe_checkboxes[ppe] = checkbox
+            required_ppe_layout.addWidget(checkbox, index // 2, index % 2)
+        mode_layout.addLayout(required_ppe_layout)
+
+        self.required_ppe_label = QLabel()
+        self.required_ppe_label.setStyleSheet("color: gray; font-size: 10px;")
+        mode_layout.addWidget(self.required_ppe_label)
+        self.update_required_ppe_label()
+        self.on_mode_changed()
 
         mode_group.setLayout(mode_layout)
         right_layout.addWidget(mode_group)
@@ -695,6 +735,30 @@ class PPEDetectionApp(QMainWindow):
             self.violation_mode = 1
         else:
             self.violation_mode = 2
+        for checkbox in self.required_ppe_checkboxes.values():
+            checkbox.setEnabled(self.violation_mode == 2)
+
+    def on_required_ppe_changed(self, ppe, checked):
+        """Update Mode 2 requirements while keeping at least one PPE selected."""
+        checkbox = self.required_ppe_checkboxes[ppe]
+        if not checked and not any(
+            item.isChecked()
+            for name, item in self.required_ppe_checkboxes.items()
+            if name != ppe
+        ):
+            checkbox.setChecked(True)
+            return
+
+        self.required_ppe = [
+            item for item in PPE_PROPER
+            if self.required_ppe_checkboxes[item].isChecked()
+        ]
+        self.update_required_ppe_label()
+
+    def update_required_ppe_label(self):
+        self.required_ppe_label.setText(
+            f"Selected: {', '.join(self.required_ppe)}"
+        )
 
     def toggle_detection(self):
         """Start or stop detection"""
@@ -716,6 +780,7 @@ class PPEDetectionApp(QMainWindow):
         self.session_compliant = 0
         self.session_violations = 0
         self.logged_person_ids = set()
+        self.last_audio_status = None
         if self.person_tracker:
             self.person_tracker.reset()
         self.update_statistics_display()
@@ -729,6 +794,9 @@ class PPEDetectionApp(QMainWindow):
     def stop_detection(self):
         """Stop video capture and detection"""
         self.timer.stop()
+        self.last_audio_status = None
+        if self.audio_enabled:
+            mixer.music.stop()
         if self.cap:
             self.cap.release()
         self.cap = None
@@ -784,10 +852,9 @@ class PPEDetectionApp(QMainWindow):
     def check_violations(self, results, person_bboxes=None):
         """
         Check for PPE violations based on detection results
-        Returns: list of (has_violation, violation_details, person_id, ppe_status) for each person
+        Returns a compliance result for each detected person.
         """
         boxes = results[0].boxes
-        detected_classes = []
         detection_data = []
 
         # Collect all detections
@@ -797,7 +864,6 @@ class PPEDetectionApp(QMainWindow):
             confidence = float(box.conf[0])
             bbox = box.xyxy[0].cpu().numpy()  # x1, y1, x2, y2
 
-            detected_classes.append(class_name)
             detection_data.append({
                 'class': class_name,
                 'confidence': confidence,
@@ -806,43 +872,41 @@ class PPEDetectionApp(QMainWindow):
 
         # Find all persons
         person_detections = [d for d in detection_data if d['class'] == PERSON_CLASS]
+        person_items = [[] for _ in person_detections]
+
+        # Assign each PPE detection to at most one person.
+        for det in detection_data:
+            if det['class'] not in PPE_PROPER and det['class'] not in PPE_VIOLATIONS:
+                continue
+            matches = [
+                (
+                    self._check_proximity(person['bbox'], det['bbox']),
+                    -((person['bbox'][0] + person['bbox'][2] - det['bbox'][0] - det['bbox'][2]) ** 2
+                      + (person['bbox'][1] + person['bbox'][3] - det['bbox'][1] - det['bbox'][3]) ** 2),
+                    index
+                )
+                for index, person in enumerate(person_detections)
+            ]
+            if matches:
+                overlap, _, index = max(matches)
+                if overlap > 0.3:
+                    person_items[index].append(det['class'])
 
         results_list = []
 
         # Check each person for PPE compliance
-        for person_det in person_detections:
+        for person_det, items in zip(person_detections, person_items):
             person_bbox = person_det['bbox']
             person_confidence = person_det['confidence']
 
-            # Find PPE items near this person (simple proximity check)
-            ppe_status = {
-                'helmet': False,
-                'vest': False,
-                'gloves': False,
-                'boots': False,
-                'goggles': False
-            }
-
-            # Check for proper PPE near person
-            for ppe_item in PPE_PROPER:
-                if ppe_item == 'Person':
-                    continue
-                for det in detection_data:
-                    if det['class'] == ppe_item:
-                        # Simple check: if PPE bbox overlaps or is close to person bbox
-                        if self._check_proximity(person_bbox, det['bbox']):
-                            ppe_status[ppe_item] = True
-
-            # Check for violation classes near person
-            violation_detected = None
-            for violation in PPE_VIOLATIONS:
-                for det in detection_data:
-                    if det['class'] == violation:
-                        if self._check_proximity(person_bbox, det['bbox']):
-                            violation_detected = violation
-                            break
-                if violation_detected:
-                    break
+            ppe_status = {ppe: ppe in items for ppe in PPE_PROPER}
+            violations = [item for item in items if item in PPE_VIOLATIONS]
+            for violation in violations:
+                missing_item = PPE_VIOLATIONS[violation]
+                if missing_item is not None:
+                    ppe_status[missing_item] = False
+                else:
+                    ppe_status = {ppe: False for ppe in PPE_PROPER}
 
             # Determine if person is compliant based on mode
             is_compliant = True
@@ -850,9 +914,9 @@ class PPEDetectionApp(QMainWindow):
 
             if self.violation_mode == 1:
                 # Mode 1: Any missing PPE or violation class
-                if violation_detected:
+                if violations:
                     is_compliant = False
-                    violation_message = f"Violation detected: {violation_detected}"
+                    violation_message = f"Violation detected: {', '.join(violations)}"
                 else:
                     missing_ppe = [ppe for ppe in PPE_PROPER if not ppe_status.get(ppe, False)]
                     if missing_ppe:
@@ -860,11 +924,19 @@ class PPEDetectionApp(QMainWindow):
                         violation_message = f"Missing PPE: {', '.join(missing_ppe)}"
             else:
                 # Mode 2: Check only required PPE
-                if violation_detected and violation_detected in ['no_' + ppe for ppe in REQUIRED_PPE]:
+                required_violations = [
+                    violation for violation in violations
+                    if PPE_VIOLATIONS[violation] is None
+                    or PPE_VIOLATIONS[violation] in self.required_ppe
+                ]
+                if required_violations:
                     is_compliant = False
-                    violation_message = f"Required PPE violation: {violation_detected}"
+                    violation_message = f"Required PPE violation: {', '.join(required_violations)}"
                 else:
-                    missing_required = [ppe for ppe in REQUIRED_PPE if not ppe_status.get(ppe, False)]
+                    missing_required = [
+                        ppe for ppe in self.required_ppe
+                        if not ppe_status.get(ppe, False)
+                    ]
                     if missing_required:
                         is_compliant = False
                         violation_message = f"Missing required PPE: {', '.join(missing_required)}"
@@ -879,8 +951,8 @@ class PPEDetectionApp(QMainWindow):
 
         return results_list
 
-    def _check_proximity(self, bbox1, bbox2, threshold=0.3):
-        """Check if two bounding boxes are close (simple IoU or overlap check)"""
+    def _check_proximity(self, bbox1, bbox2):
+        """Return the fraction of the PPE box inside the person box."""
         x1_min, y1_min, x1_max, y1_max = bbox1
         x2_min, y2_min, x2_max, y2_max = bbox2
 
@@ -891,15 +963,12 @@ class PPEDetectionApp(QMainWindow):
         y_inter_max = min(y1_max, y2_max)
 
         if x_inter_max < x_inter_min or y_inter_max < y_inter_min:
-            return False
+            return 0.0
 
         inter_area = (x_inter_max - x_inter_min) * (y_inter_max - y_inter_min)
-        bbox1_area = (x1_max - x1_min) * (y1_max - y1_min)
+        bbox2_area = (x2_max - x2_min) * (y2_max - y2_min)
 
-        # Check if intersection is significant relative to person bbox
-        overlap_ratio = inter_area / bbox1_area if bbox1_area > 0 else 0
-
-        return overlap_ratio > threshold
+        return inter_area / bbox2_area if bbox2_area > 0 else 0.0
 
     def save_violation_image(self, frame, person_id):
         """Save violation image to disk with local timezone"""
@@ -960,7 +1029,7 @@ Please ensure all personnel wear proper PPE equipment in the designated area.
             self.alert_log.append(f"[{timestamp}] Telegram notification sent (async)")
 
     def trigger_alert(self, violation_message):
-        """Trigger audio and text alert with local timezone"""
+        """Trigger a text alert with local timezone"""
         current_time = get_local_now()
 
         # Check alert cooldown
@@ -976,20 +1045,24 @@ Please ensure all personnel wear proper PPE equipment in the designated area.
         log_message = f"[{timestamp}] ALERT: {violation_message}"
         self.alert_log.append(log_message)
 
-        # Play audio alert
-        if self.audio_enabled:
-            try:
-                mixer.music.load(ALERT_SOUND_PATH)
-                mixer.music.play()
-            except Exception as e:
-                print(f"Error playing alert sound: {str(e)}")
-
         # Send Telegram notification
         self.send_telegram_notification(violation_message)
 
         # Update status
         self.status_label.setText(f"Status: VIOLATION DETECTED - {violation_message}")
         self.status_label.setStyleSheet("color: red; font-weight: bold;")
+
+    def play_status_sound(self, status):
+        if status == self.last_audio_status:
+            return
+        self.last_audio_status = status
+        if status is not None and self.audio_enabled:
+            sound_path = PASS_SOUND_PATH if status == "PASS" else FAIL_SOUND_PATH
+            try:
+                mixer.music.load(sound_path)
+                mixer.music.play()
+            except (PygameError, OSError) as e:
+                print(f"Error playing {status} sound from {sound_path}: {e}")
 
     def update_frame(self):
         """Update video frame with detection - optimized for performance"""
@@ -1068,6 +1141,18 @@ Please ensure all personnel wear proper PPE equipment in the designated area.
             else:
                 annotated_frame = results[0].plot()
 
+            # Label each person using coordinates in the full frame.
+            for i, v_result in enumerate(violation_results):
+                x, y, _, _ = person_bboxes[i]
+                x += roi_offset[0]
+                y += roi_offset[1]
+                label = "VIOLATION" if v_result['has_violation'] else "PASS"
+                if self.person_tracker:
+                    label = f"ID:{person_ids[i]}"
+                color = (0, 0, 255) if v_result['has_violation'] else (0, 255, 0)
+                cv2.putText(annotated_frame, label, (x, max(20, y - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
             # Update stored frame with annotations (for notifications with bounding boxes)
             self.current_frame = annotated_frame.copy()
 
@@ -1111,26 +1196,27 @@ Please ensure all personnel wear proper PPE equipment in the designated area.
                     # Update statistics display
                     self.update_statistics_display()
 
-            # Reset status if no violations in current frame
-            if not any(v['has_violation'] for v in violation_results):
-                self.status_label.setText("Status: Detection running... No violations")
+            violations = [v for v in violation_results if v['has_violation']]
+            if violations:
+                self.status_label.setText(f"Status: VIOLATION - {violations[0]['violation_message']}")
+                self.status_label.setStyleSheet("color: red; font-weight: bold;")
+                self.play_status_sound("VIOLATION")
+            elif violation_results:
+                self.status_label.setText("Status: PASS")
+                self.status_label.setStyleSheet("color: green; font-weight: bold;")
+                self.play_status_sound("PASS")
+            else:
+                self.status_label.setText("Status: Detection running... No person detected")
                 self.status_label.setStyleSheet("")
+                self.play_status_sound(None)
 
-            # Add violation warning overlay if any violations
-            if any(v['has_violation'] for v in violation_results):
-                cv2.putText(annotated_frame, "VIOLATION DETECTED!", (50, 50),
+            # Show the overall frame status.
+            if violations:
+                cv2.putText(annotated_frame, "VIOLATION", (50, 50),
                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
-
-            # Draw person IDs if tracking enabled
-            if self.person_tracker and len(person_ids) > 0:
-                for i, person_id in enumerate(person_ids):
-                    if i < len(person_bboxes):
-                        x, y, w, h = person_bboxes[i]
-                        # Adjust for ROI offset
-                        x += roi_offset[0]
-                        y += roi_offset[1]
-                        cv2.putText(annotated_frame, f"ID:{person_id}", (x, y - 10),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+            elif violation_results:
+                cv2.putText(annotated_frame, "PASS", (50, 50),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
         else:
             annotated_frame = frame
 
