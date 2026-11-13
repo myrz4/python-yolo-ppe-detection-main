@@ -1180,8 +1180,6 @@ Please ensure all personnel wear proper PPE equipment in the designated area.
                             image_path
                         )
 
-                        # Trigger alert (will send annotated frame with bounding boxes)
-                        self.trigger_alert(v_result['violation_message'])
                     else:
                         self.session_compliant += 1
 
@@ -1198,6 +1196,7 @@ Please ensure all personnel wear proper PPE equipment in the designated area.
 
             violations = [v for v in violation_results if v['has_violation']]
             if violations:
+                self.trigger_alert(violations[0]['violation_message'])
                 self.status_label.setText(f"Status: VIOLATION - {violations[0]['violation_message']}")
                 self.status_label.setStyleSheet("color: red; font-weight: bold;")
                 self.play_status_sound("VIOLATION")

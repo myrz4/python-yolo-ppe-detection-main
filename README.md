@@ -290,14 +290,17 @@ VIDEO_SOURCE = 'path/to/video.mp4'
 - Defaults to helmet and vest; at least one item must remain selected
 - Recommended for areas with specific requirements
 
-In `06_roi_telegram_logging_ppe_detection.py`, tracked people are labeled with
-their ID, colored green for PASS or red for VIOLATION. Without tracking, their
-labels show PASS or VIOLATION. The video also shows an overall
+In the `04`, `05`, and both `06` detection scripts, tracked people are labeled
+with their ID above the person bounding box. The video also shows an overall
 VIOLATION if any person fails, or PASS if all detected people pass. No PASS is
 shown when no person is detected. Mode 1 requires all five listed PPE items;
 Mode 2 only requires the configured items.
-The main script plays `pass.mp3` or `fail.mp3` when the overall status changes
+These scripts play `pass.mp3` or `fail.mp3` when the overall status changes
 to PASS or VIOLATION, respectively. No sound plays while no person is detected.
+The `04`, `05`, and email `06` scripts use `ppe_status.py` for their shared
+compliance and audio logic; keep that file alongside the scripts.
+These GUIs display the TechnipFMC logo when `technipfmc.webp` is present beside
+the program.
 
 ### Timezone Configuration
 

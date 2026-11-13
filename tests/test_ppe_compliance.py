@@ -46,6 +46,7 @@ class ComplianceDisplayTests(unittest.TestCase):
             video_label=Mock(),
             status_label=Mock(),
             play_status_sound=Mock(),
+            trigger_alert=Mock(),
         )
         app._check_proximity = lambda a, b: ppe.PPEDetectionApp._check_proximity(app, a, b)
         app.check_violations = lambda results: ppe.PPEDetectionApp.check_violations(app, results)
@@ -57,6 +58,10 @@ class ComplianceDisplayTests(unittest.TestCase):
             "PASS" if people else None
         )
         app.play_status_sound.assert_called_once_with(expected_sound)
+        if expected_sound == "VIOLATION":
+            app.trigger_alert.assert_called_once()
+        else:
+            app.trigger_alert.assert_not_called()
         labels = [call.args[1] for call in put_text.call_args_list]
         return app.status_label.setText.call_args.args[0], labels
 
