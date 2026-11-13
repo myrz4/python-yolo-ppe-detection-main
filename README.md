@@ -72,6 +72,18 @@ To train your own PPE detection model locally:
 - **Class balance**: Ensure balanced representation of all PPE classes
 - **Validation split**: Use 80/20 train/validation split
 
+### Capturing dataset images
+
+Run `python 08_capture_dataset_images.py` to open the camera and save to
+`dataset_raw/person01/full_ppe` by default. In the preview, press **F** to
+select or create a parent folder (for example, `person02`). The current mode
+folder is created inside it if needed. Press **1–8** to switch modes within
+that same parent folder, **Space** to pause or resume, **S** to save a frame,
+or **Q** / **Esc** to quit. The full current save path is printed in the
+terminal. Use `--output`, `--person`, and `--condition` to
+set the initial destination; `--no-preview` uses that destination without
+interactive folder selection.
+
 ## Installation
 
 1. **Clone the repository**

@@ -3,13 +3,14 @@ Dataset Image Capture Tool
 Continuously captures images from a camera and saves them for labeling (Roboflow) and training (Colab).
 
 Examples:
-    python 08_capture_dataset_images.py --person person01          # shows a folder menu
+    python 08_capture_dataset_images.py --person person01          # starts in full_ppe
     python 08_capture_dataset_images.py --person person01 --condition 2
     python 08_capture_dataset_images.py --person person02 --condition no_helmet --interval 0.5
     python 08_capture_dataset_images.py --interval 0 --max-images 500   # every frame
 
 Keys (preview window):
     1-8   = switch the save folder (see CONDITIONS below)
+    F     = select or create a parent dataset folder
     SPACE = pause / resume auto capture
     S     = save one image immediately
     Q/ESC = quit
@@ -35,20 +36,27 @@ CONDITIONS = [
 
 
 def choose_condition(value):
-    """Resolve a condition from a number (1-8), a known name, or an interactive menu."""
+    """Resolve a condition from a number (1-8) or a name."""
     if value:
         if value.isdigit() and 1 <= int(value) <= len(CONDITIONS):
             return CONDITIONS[int(value) - 1]
         return value
+    return CONDITIONS[0]
 
-    print("Select the folder to save images to:")
-    for i, name in enumerate(CONDITIONS, 1):
-        print(f"  {i}. {name.replace('_', ' ')}")
-    while True:
-        choice = input(f"Enter 1-{len(CONDITIONS)}: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(CONDITIONS):
-            return CONDITIONS[int(choice) - 1]
-        print("Invalid choice, try again.")
+
+def choose_folder(initial_dir):
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        return filedialog.askdirectory(
+            parent=root, title="Select or create a parent dataset folder",
+            initialdir=os.path.abspath(initial_dir), mustexist=True,
+        )
+    finally:
+        root.destroy()
 
 
 def parse_args():
@@ -57,7 +65,7 @@ def parse_args():
     p.add_argument("--output", default="dataset_raw", help="Base output folder")
     p.add_argument("--person", default="person01", help="Person ID (used as folder name)")
     p.add_argument("--condition", default=None,
-                   help="Folder: number 1-8 or a name (full_ppe, no_helmet, ...). Omit to choose from a menu")
+                   help="Folder: number 1-8 or a name (default: full_ppe)")
     p.add_argument("--interval", type=float, default=1.0,
                    help="Seconds between saved images. 0 = save every frame. 0.1 = ~10 images/second")
     p.add_argument("--max-images", type=int, default=0, help="Stop after N saved images (0 = unlimited)")
@@ -110,7 +118,9 @@ def main():
     args = parse_args()
 
     condition = choose_condition(args.condition)
-    out_dir = os.path.join(args.output, args.person, condition)
+    parent_dir = os.path.join(args.output, args.person)
+    person_name = args.person
+    out_dir = os.path.join(parent_dir, condition)
     os.makedirs(out_dir, exist_ok=True)
 
     cap = open_source(args.source, args.width, args.height)
@@ -119,15 +129,14 @@ def main():
         return
 
     print(f"Saving to: {os.path.abspath(out_dir)}")
-    print("Keys: 1-8 = switch folder, SPACE = pause/resume, S = save one now, Q/ESC = quit")
+    print("Keys: 1-8 = switch mode, F = select/create parent folder, SPACE = pause/resume, S = save one now, Q/ESC = quit")
 
     def set_condition(new_condition):
-        nonlocal condition, out_dir, last_small, existing
+        nonlocal condition, out_dir, last_small
         condition = new_condition
-        out_dir = os.path.join(args.output, args.person, condition)
+        out_dir = os.path.join(parent_dir, condition)
         os.makedirs(out_dir, exist_ok=True)
         last_small = None
-        existing = len(os.listdir(out_dir))
         print(f"Switched to: {os.path.abspath(out_dir)}")
 
     saved = 0
@@ -138,7 +147,6 @@ def main():
     last_small = None
     start_time = time.time()
     capture_start = start_time + args.start_delay
-    existing = len(os.listdir(out_dir))
 
     def save_frame(frame, force=False):
         nonlocal saved, skipped_blur, skipped_dup, last_small
@@ -154,8 +162,10 @@ def main():
                     return False
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        name = f"{args.person}_{condition}_{stamp}.jpg"
-        cv2.imwrite(os.path.join(out_dir, name), frame, [cv2.IMWRITE_JPEG_QUALITY, args.quality])
+        name = f"{person_name}_{condition}_{stamp}.jpg"
+        path = os.path.join(out_dir, name)
+        if not cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, args.quality]):
+            raise OSError(f"Could not save image to '{path}'")
         saved += 1
         last_small = small
         return True
@@ -185,11 +195,15 @@ def main():
             else:
                 status = "CAPTURING"
                 color = (0, 255, 0)
-            cv2.putText(view, f"{status} | {args.person}/{condition}", (10, 30),
+            cv2.putText(view, f"{status} | {person_name}/{condition}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
             cv2.putText(view, f"Saved: {saved} (this session)  Blur skipped: {skipped_blur}  Dup skipped: {skipped_dup}",
                         (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(view, "Folder keys: " + " ".join(f"{i}={n}" for i, n in enumerate(CONDITIONS, 1)),
+            cv2.putText(view, "Folders: " + " ".join(f"{i}={n}" for i, n in enumerate(CONDITIONS[:4], 1)),
+                        (10, view.shape[0] - 48), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            cv2.putText(view, " ".join(f"{i}={n}" for i, n in enumerate(CONDITIONS[4:], 5)),
+                        (10, view.shape[0] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            cv2.putText(view, "F: select/create parent  SPACE: pause  S: save  Q/ESC: quit",
                         (10, view.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
             cv2.imshow("Dataset Capture", view)
             key = cv2.waitKey(1) & 0xFF
@@ -197,6 +211,12 @@ def main():
                 break
             if ord("1") <= key <= ord(str(len(CONDITIONS))):
                 set_condition(CONDITIONS[key - ord("1")])
+            elif key == ord("f"):
+                selected = choose_folder(parent_dir)
+                if selected:
+                    parent_dir = selected
+                    person_name = os.path.basename(os.path.normpath(parent_dir)) or args.person
+                    set_condition(condition)
             elif key == ord(" "):
                 paused = not paused
             elif key == ord("s"):
